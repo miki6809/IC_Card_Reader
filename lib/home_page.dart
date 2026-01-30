@@ -3,8 +3,29 @@ import 'package:flutter/foundation.dart';
 import 'package:nfc_manager/nfc_manager.dart';
 import 'package:nfc_manager/nfc_manager_android.dart';
 import 'package:flutter/services.dart';
+import 'dart:io';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:csv/csv.dart';
 
 // --- カード解析用のデータベース定義 ---
+final Map<int, String> _stationMap = {
+  // スクショからの推定マッピング (乗車時)
+  0xF000: '天文館', // 2026/01/16 13:21
+  0xD000: '脇田', // 2026/01/16 12:55
+  0xB000: '水族館口', // 2026/01/16 10:16
+  // スクショからの推定マッピング (降車時・下位ビット?)
+  0x0100: '天文館', // 2025/12/19 13:28 (降車100)
+  0x0101: '水族館口', // 2025/11/07 13:26 (降車101)
+  0x0201: '脇田', // 2026/01/16 10:47 (降車201)
+  // その他 (フェリー等)
+  0xA023: '桜島フェリー(鹿児島港)', // 2025/11/21 17:13
+  0x2902: '桜島フェリー(桜島港)', // 2025/11/21 17:13
+  // 参考: CSV上のコード (実機とは異なる可能性があるためコメントアウト)
+  // 0x1E84: '天文館',
+  // 0x1E85: '脇田',
+  // 0x1E8E: '水族館口',
+};
 
 enum BalanceParseMethod {
   be1415, // Big Endian (Rapica, etc.)
@@ -45,6 +66,12 @@ class SuicaHistory {
   final int amount;
   final bool isCharge;
   final String label;
+  // RAPICA用拡張フィールド
+  final int? lineCode; // 系統コード (5バイト目)
+  final int? enterStationCode; // 乗車停留所コード (6-7バイト目)
+  final int? exitStationCode; // 降車停留所コード (8-9バイト目)
+  final int? ticketNumber; // 整理券番号
+  final List<int> raw; // 生データ (16バイト)
 
   SuicaHistory({
     required this.date,
@@ -52,10 +79,16 @@ class SuicaHistory {
     required this.amount,
     required this.isCharge,
     required this.label,
+    required this.raw,
+    this.lineCode,
+    this.enterStationCode,
+    this.exitStationCode,
+    this.ticketNumber,
   });
 
   @override
-  String toString() => '残高: ¥$balance';
+  String toString() =>
+      '残高: ¥$balance (Station: $enterStationCode -> $exitStationCode)';
 }
 
 final List<FeliCaCardDefinition> _cardRegistry = [
@@ -241,14 +274,18 @@ class _HomePageState extends State<HomePage>
               // 属性サービスから最新の利用日時(アンカー)を取得
               if (rule.serviceCode[0] == 0x4b) {
                 var b = resBlocks[0];
-                if (b.length >= 3) {
-                  int y = b[0]; // 26 (0x1a)
-                  int m = b[1]; // 1
-                  int d = b[2]; // 16
+                if (b.length >= 5) {
+                  // 時・分まで含むため5バイト以上を確認
+                  int y = b[0]; // 年 (Year)
+                  int m = b[1]; // 月 (Month)
+                  int d = b[2]; // 日 (Day)
+                  int h = b[3]; // 時 (Hour)
+                  int min = b[4]; // 分 (Minute)
+
                   if (y > 0 && m > 0 && m <= 12 && d > 0 && d <= 31) {
-                    anchorDate = DateTime(2000 + y, m, d);
+                    anchorDate = DateTime(2000 + y, m, d, h, min);
                     _addLog(
-                      'Card Anchor Date: ${anchorDate.year}/${anchorDate.month}/${anchorDate.day}',
+                      'Card Anchor Info: 20$y/$m/$d $h:${min.toString().padLeft(2, '0')} (Latest)',
                     );
                   }
                 }
@@ -307,6 +344,11 @@ class _HomePageState extends State<HomePage>
 
                   // 2. カードの種類に応じた最終日時の決定
                   DateTime displayDate;
+                  int? line;
+                  int? enterStation;
+                  int? exitStation;
+                  int? ticket;
+
                   if (identifiedCard.systemCode[0] == 0x81 &&
                       identifiedCard.systemCode[1] == 0x94) {
                     // RAPICA (いわさきグループ仕様):
@@ -319,6 +361,17 @@ class _HomePageState extends State<HomePage>
                     int day = datePart % 100;
                     int hour = timePart ~/ 100;
                     int minute = timePart % 100;
+
+                    // 系統・停留所情報の抽出 (参考: http://jennychan.web.fc2.com/format/rapica.html)
+                    // B5: 系統コード
+                    line = b[5];
+                    // B6-B7: 乗車停留所 (整理券番号はB7の下位ビットなどに含まれる可能性があるが、まずは単純結合でコード化)
+                    enterStation = (b[6] << 8) | b[7];
+                    // B8-B9: 降車停留所
+                    exitStation = (b[8] << 8) | b[9];
+
+                    // 整理券番号（推定: B7の下位ビットやB9の下位ビットが使われるケースもあるが、一旦生コードを表示）
+                    ticket = 0;
 
                     // 年の決定: 属性情報のanchorDate月と比較し、未来なら前年とみなす
                     int year = anchorDate.year;
@@ -367,6 +420,11 @@ class _HomePageState extends State<HomePage>
                         amount: diff,
                         isCharge: diff > 0,
                         label: finalLabel,
+                        raw: b,
+                        lineCode: line,
+                        enterStationCode: enterStation,
+                        exitStationCode: exitStation,
+                        ticketNumber: ticket,
                       ),
                     );
                   }
@@ -544,41 +602,131 @@ class _HomePageState extends State<HomePage>
     );
   }
 
+  Future<void> _exportHistory() async {
+    if (_history.isEmpty) {
+      _showError('共有する履歴がありません');
+      return;
+    }
+
+    try {
+      List<List<dynamic>> rows = [];
+      // Header
+      rows.add([
+        'Date',
+        'Time',
+        'Type',
+        'Station_Line',
+        'Station_Enter',
+        'Station_Exit',
+        'Amount',
+        'Balance',
+        'Raw_Hex',
+      ]);
+
+      // Data
+      for (var item in _history) {
+        String dateStr =
+            '${item.date.year}/${item.date.month.toString().padLeft(2, '0')}/${item.date.day.toString().padLeft(2, '0')}';
+        String timeStr =
+            '${item.date.hour.toString().padLeft(2, '0')}:${item.date.minute.toString().padLeft(2, '0')}';
+
+        String enterName = '';
+        if (item.enterStationCode != null) {
+          enterName = _stationMap[item.enterStationCode] ?? 'Unknown';
+          enterName +=
+              '(${item.enterStationCode!.toRadixString(16).toUpperCase()})';
+        }
+
+        String exitName = '';
+        if (item.exitStationCode != null) {
+          exitName = _stationMap[item.exitStationCode] ?? 'Unknown';
+          exitName +=
+              '(${item.exitStationCode!.toRadixString(16).toUpperCase()})';
+        }
+
+        String rawHex = item.raw
+            .map((e) => e.toRadixString(16).padLeft(2, '0'))
+            .join()
+            .toUpperCase();
+
+        rows.add([
+          dateStr,
+          timeStr,
+          item.label,
+          item.lineCode?.toRadixString(16).toUpperCase() ?? '',
+          enterName,
+          exitName,
+          item.amount,
+          item.balance,
+          rawHex,
+        ]);
+      }
+
+      String csvData = const ListToCsvConverter().convert(rows);
+      final directory = await getTemporaryDirectory();
+      final path = '${directory.path}/history_export.csv';
+      final file = File(path);
+      await file.writeAsString(csvData);
+
+      await Share.shareXFiles([XFile(path)], text: 'IC Card History Export');
+    } catch (e) {
+      _addLog('Export Error: $e');
+      _showError('書き出しに失敗しました: $e');
+    }
+  }
+
   Widget _buildHeader() {
     return Padding(
       padding: const EdgeInsets.all(24.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
+          const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'IC Reader PRO'.toUpperCase(),
+                'IC READER PRO',
                 style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.5),
+                  color: Colors.white54,
                   fontSize: 12,
-                  fontWeight: FontWeight.bold,
                   letterSpacing: 1.5,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-              const Text(
+              SizedBox(height: 4),
+              Text(
                 'Smart Scanner',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 28,
                   fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                  shadows: [
+                    Shadow(
+                      color: Colors.black26,
+                      offset: Offset(0, 2),
+                      blurRadius: 4,
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(12),
+          IconButton(
+            onPressed: _exportHistory,
+            icon: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+              ),
+              child: const Icon(
+                Icons.share_outlined, // 共有アイコンに変更 (好みに応じて file_download 等でも可)
+                color: Color(0xFF0EA5E9),
+              ),
             ),
-            child: const Icon(Icons.terminal, color: Color(0xFF0EA5E9)),
+            tooltip: 'CSV書き出し',
           ),
         ],
       ),
@@ -735,6 +883,49 @@ class _HomePageState extends State<HomePage>
                   '${item.date.year}/${item.date.month.toString().padLeft(2, "0")}/${item.date.day.toString().padLeft(2, "0")} ${item.date.hour.toString().padLeft(2, "0")}:${item.date.minute.toString().padLeft(2, "0")}   残高: ¥${item.balance}',
                   style: const TextStyle(color: Colors.white54, fontSize: 11),
                 ),
+                if (item.enterStationCode != null &&
+                    item.enterStationCode != 0) ...[
+                  Builder(
+                    builder: (context) {
+                      final enterName =
+                          _stationMap[item.enterStationCode] ?? 'Unknown';
+                      final exitName =
+                          _stationMap[item.exitStationCode] ?? 'Unknown';
+
+                      // ユーザー要望による表示制御:
+                      // 乗車(0円)の時は降車情報は不要 -> "-"
+                      // 支払(マイナス)の時は乗車情報は不要 -> "-" (※データとしては乗車地があるが、UI上は隠す)
+                      String enterStr = '-';
+                      String exitStr = '-';
+
+                      if (item.amount == 0) {
+                        // 乗車時: 乗車地を表示、降車地は無視
+                        enterStr =
+                            '$enterName(${item.enterStationCode!.toRadixString(16).toUpperCase()})';
+                      } else if (item.amount < 0) {
+                        // 支払(降車)時: 降車地を表示、乗車地は無視
+                        // ※ユーザー要望「降りているので乗には表示が出ないはず」に対応
+                        exitStr =
+                            '$exitName(${item.exitStationCode!.toRadixString(16).toUpperCase()})';
+                      } else {
+                        // それ以外(チャージ等?): 両方表示しておく
+                        enterStr =
+                            '$enterName(${item.enterStationCode!.toRadixString(16).toUpperCase()})';
+                        exitStr =
+                            '$exitName(${item.exitStationCode!.toRadixString(16).toUpperCase()})';
+                      }
+
+                      return Text(
+                        '系統:${item.lineCode}  乗:$enterStr  降:$exitStr',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ],
             ),
           ),
