@@ -10,31 +10,40 @@ import 'package:csv/csv.dart';
 
 // --- カード解析用のデータベース定義 ---
 final Map<int, String> _stationMap = {
-  // スクショからの推定マッピング (乗車時)
-  0x6001: 'イオンモール鹿児島',
-  0x7009: 'せんてらす前',
-  0xB000: '水族館口', // 2026/01/16 10:16
-  0xC006: '中央駅',
-  0xD000: '脇田', // 2026/01/16 12:55
-  0xE006: '水族館前', // 2026/1/29	14:53
-  0xE400: '中央駅',
-  0xF000: '天文館', // 2026/01/16 13:21
-  // スクショからの推定マッピング (降車時・下位ビット?)
-  0x0100: '天文館', // 2025/12/19 13:28 (降車100)
-  0x0101: '水族館口', // 2025/11/07 13:26 (降車101)
-  0x0201: '脇田', // 2026/01/16 10:47 (降車201)
-  0x0300: '中央駅',
-  0x0301: '水族館前', // 2026/01/16 10:47 (降車301)
-  0x2902: '桜島フェリー(桜島港)', // 2025/11/21 17:13
-  0x2A06: 'イオンモール鹿児島',
-  0x4100: '鹿児島中央駅前',
-  0x5600: '水族館前',
-  0xA023: '桜島フェリー(鹿児島港)', // 2025/11/21 17:13
-  0xB0A6: '水族館前',
-  // 参考: CSV上のコード (実機とは異なる可能性があるためコメントアウト)
-  // 0x1E84: '天文館',
-  // 0x1E85: '脇田',
-  // 0x1E8E: '水族館口',
+  // --- ユーザー提供 & スクショからの確定情報 ---
+  // Rapica/市電/市バス/JR/南国交通系 (事業者 0x1x, 0x20, 0x3x) - Stop: 24bit (B4-B6)
+  // 0x1A1B7D: '市バス 上之園',
+  0x1AE270: '鴨池港', // 市バス （上り）
+  0x1AE3E0: '交通局前', // 市バス （上り）
+  0x1AE4C0: '鹿児島中央駅前', // 市バス （下り）
+  0x1AE9E0: '新上橋', // 市バス （上り）
+  0x1AEAE0: '水族館前', // 市バス
+  0x1AF070: '天文館', // 市バス （上り）
+  0x1E84B0: '水族館口', // 市電
+  0x1E84F0: '天文館', // 市電
+  0x1E8500: '高見馬場', // 市電
+  0x1E8530: '武之橋', // 市電
+  0x1E8560: '騎射場', // 市電
+  0x1E8570: '鴨池', // 市電
+  0x1E8580: '郡元', // 市電
+  0x1E85D0: '脇田', // 市電
+  0x1E8610: '郡元(南)', // 市電
+  0x1E8AF0: '鹿児島中央駅前', // 市電
+  0x1FBDF0: '鹿児島中央駅', // 南国交通 （上り）
+  0x1FEC30: '天文館', // 南国交通 （上り）,
+  0x23E400: '鹿児島中央駅', // ＪＲ九州バス （上り）
+  0x23E3D0: '天文館', // ＪＲ九州バス （上り）
+  0x3095A0: 'フェリー 桜島口', // 桜島
+  // いわさきグループ (事業者 0x4x, 0x5x：B3上位ニブル) - Stop: 12bit (B4下位ニブル-B5)
+  // 0x0D6: '林田バス停留所', // 例: 0x50 operator
+  0x282: '騎射場（下り）', // 鹿児島交通
+  0x450: '新上橋（下り）', // 林田バス
+  0x550: '鴨池港前（下り）', // 林田バス
+  0x581: 'イオンモール鹿児島（上り）',
+  0x681: '水族館前（上り）',
+  0x881: '鹿児島中央駅（下り）', // いわさき 0x4x
+  0x902: '鴨池港（下り）', // 鹿児島交通
+  0xD01: 'イオンモール鹿児島（下り）',
 };
 
 enum BalanceParseMethod {
@@ -302,143 +311,125 @@ class _HomePageState extends State<HomePage>
                 continue; // 属性は日付取得のみ
               }
 
-              List<int> blockBalances = [];
-              //List<DateTime> blockDates = [];
-              List<int> blockTypeBytes = [];
-              List<int> tripIds = [];
-
-              for (var b in resBlocks) {
+              // 最古の履歴（最後のブロック）は不完全なデータの可能性があるため除外
+              int maxIndex = resBlocks.length > 0 ? resBlocks.length - 1 : 0;
+              for (int i = 0; i < maxIndex; i++) {
+                var b = resBlocks[i];
                 if (b.length < 16) continue;
-                // 詳細な生データログは開発終了のため整理
-                // _addLog('H-Block ${resBlocks.indexOf(b)}: ${b.map((e) => e.toRadixString(16).padLeft(2, "0")).join(" ")}');
 
                 int currentBalance = (b[14] << 8 | b[15]);
                 int statusType = b[12];
-                int tripId = b[0];
+                int operator = b[3];
 
-                if (currentBalance >= 0 && currentBalance < 200000) {
-                  blockBalances.add(currentBalance);
-                  blockTypeBytes.add(statusType);
-                  tripIds.add(tripId);
+                if (currentBalance < 0 || currentBalance >= 200000) continue;
 
-                  if (!foundBalanceFromHistory) {
-                    latestBalance = currentBalance;
-                    foundBalanceFromHistory = true;
+                if (!foundBalanceFromHistory) {
+                  latestBalance = currentBalance;
+                  foundBalanceFromHistory = true;
+                }
+
+                int diff = 0;
+                if (i + 1 < resBlocks.length) {
+                  var nextB = resBlocks[i + 1];
+                  if (nextB.length >= 16) {
+                    int nextBalance = (nextB[14] << 8 | nextB[15]);
+                    diff = currentBalance - nextBalance;
                   }
                 }
-              }
 
-              if (blockBalances.isNotEmpty) {
-                for (int i = 0; i < blockBalances.length; i++) {
-                  int diff = 0;
-                  if (i + 1 < blockBalances.length) {
-                    diff = blockBalances[i] - blockBalances[i + 1];
-                  }
+                // --- 日付解析 (B0, B1, B2) ---
+                // [B0:B1高4bit] = 月*100 + 日 (12bit)
+                // [B1低4bit:B2] = 時*100 + 分 (12bit)
+                int datePart = (b[0] << 4) | (b[1] >> 4);
+                int timePart = ((b[1] & 0x0F) << 8) | b[2];
 
-                  // --- 汎用的な日付決定ロジック ---
-                  var b = resBlocks[i];
+                int month = datePart ~/ 100;
+                int day = datePart % 100;
+                int hour = timePart ~/ 100;
+                int minute = timePart % 100;
 
-                  // 1. 基本的な日付形式の解析 (Suica等)
-                  int sMonth = 0, sDay = 0, sYear = 0;
-                  if (rule.parseMethod == BalanceParseMethod.be1415) {
-                    int dateVal = (b[4] << 8) | b[5];
-                    sYear = (dateVal >> 9) & 0x7F;
-                    sMonth = (dateVal >> 5) & 0x0F;
-                    sDay = dateVal & 0x1F;
-                  } else {
-                    int dateVal = (b[5] << 8) | b[4];
-                    sYear = (dateVal >> 9) & 0x7F;
-                    sMonth = (dateVal >> 5) & 0x0F;
-                    sDay = dateVal & 0x1F;
-                  }
+                // 年の決定: 属性情報のanchorDate月と比較し、未来なら前年とみなす
+                int year = anchorDate.year;
+                if (month > anchorDate.month) {
+                  year -= 1;
+                } else if (month == anchorDate.month && day > anchorDate.day) {
+                  year -= 1;
+                }
 
-                  // 2. カードの種類に応じた最終日時の決定
-                  DateTime displayDate;
-                  int? line;
-                  int? enterStation;
-                  int? exitStation;
-                  int? ticket;
+                DateTime displayDate;
+                if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+                  displayDate = DateTime(year, month, day, hour, minute);
+                } else {
+                  displayDate = anchorDate;
+                }
 
-                  if (identifiedCard.systemCode[0] == 0x81 &&
-                      identifiedCard.systemCode[1] == 0x94) {
-                    // RAPICA (いわさきグループ仕様):
-                    // [B0:B1高4bit] = 月*100 + 日 (12bit)
-                    // [B1低4bit:B2] = 時*100 + 分 (12bit)
-                    int datePart = (b[0] << 4) | (b[1] >> 4);
-                    int timePart = ((b[1] & 0x0F) << 8) | b[2];
+                // --- 系統・停留所解析 ---
+                int? line;
+                int? station;
 
-                    int month = datePart ~/ 100;
-                    int day = datePart % 100;
-                    int hour = timePart ~/ 100;
-                    int minute = timePart % 100;
+                // 事業者コードによる分岐
+                bool isRapicaGroup =
+                    (operator & 0xF0 == 0x10) ||
+                    (operator == 0x20) ||
+                    (operator & 0xF0 == 0x30);
 
-                    // 系統・停留所情報の抽出 (参考: http://jennychan.web.fc2.com/format/rapica.html)
-                    // B5: 系統コード
-                    line = b[5];
-                    // B6-B7: 乗車停留所 (整理券番号はB7の下位ビットなどに含まれる可能性があるが、まずは単純結合でコード化)
-                    enterStation = (b[6] << 8) | b[7];
-                    // B8-B9: 降車停留所
-                    exitStation = (b[8] << 8) | b[9];
+                if (isRapicaGroup) {
+                  // Rapica/City/JR: Stop (24bit: B4-B6), Route (16bit: B7-B8)
+                  station = (b[4] << 16) | (b[5] << 8) | b[6];
+                  line = (b[7] << 8) | b[8];
+                } else {
+                  // Iwasaki: Stop (12bit: B4 lower nibble + B5), Route (24bit: B6-B8)
+                  station = ((b[4] & 0x0F) << 8) | b[5];
+                  line = (b[6] << 16) | (b[7] << 8) | b[8];
+                }
 
-                    // 整理券番号（推定: B7の下位ビットやB9の下位ビットが使われるケースもあるが、一旦生コードを表示）
-                    ticket = 0;
-
-                    // 年の決定: 属性情報のanchorDate月と比較し、未来なら前年とみなす
-                    int year = anchorDate.year;
-                    if (month > anchorDate.month) {
-                      year -= 1;
-                    } else if (month == anchorDate.month &&
-                        day > anchorDate.day) {
-                      year -= 1;
-                    }
-
-                    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-                      displayDate = DateTime(year, month, day, hour, minute);
-                    } else {
-                      displayDate = anchorDate;
-                    }
-                  } else {
-                    // 交通系IC等: 解析した日付ビットをそのまま採用 (Suica形式)
-                    if (sMonth >= 1 &&
-                        sMonth <= 12 &&
-                        sDay >= 1 &&
-                        sDay <= 31) {
-                      displayDate = DateTime(2000 + sYear, sMonth, sDay);
-                    } else {
-                      displayDate = anchorDate;
-                    }
-                  }
-
-                  String finalLabel = '利用';
-                  if (diff > 0) {
-                    finalLabel = 'チャージ';
-                  } else if (diff == 0) {
-                    finalLabel = '乗車';
-                  } else {
-                    finalLabel = (blockTypeBytes[i] == 0x47)
-                        ? 'フェリー/窓口精算'
-                        : '運賃支払';
-                  }
-
-                  // 一番最後の項目は「その前」の残高が存在せず利用額を算出できないため、
-                  // ゴミデータ（0円乗車など）に見えるのを避けるために明細からは除外する。
-                  if (i < blockBalances.length - 1) {
-                    collectedHistory.add(
-                      SuicaHistory(
-                        date: displayDate,
-                        balance: blockBalances[i],
-                        amount: diff,
-                        isCharge: diff > 0,
-                        label: finalLabel,
-                        raw: b,
-                        lineCode: line,
-                        enterStationCode: enterStation,
-                        exitStationCode: exitStation,
-                        ticketNumber: ticket,
-                      ),
-                    );
+                // --- ラベル決定 ---
+                String finalLabel = '利用';
+                if (diff > 0) {
+                  finalLabel = 'チャージ';
+                } else {
+                  switch (statusType) {
+                    case 0x30:
+                      finalLabel = '乗車';
+                      break;
+                    case 0x41:
+                      finalLabel = '降車';
+                      break;
+                    case 0x10:
+                      finalLabel = '作成/チャージ';
+                      break;
+                    case 0x20:
+                      finalLabel = (operator == 0x48) ? '窓口精算' : '精算/寄港';
+                      break;
+                    case 0x44:
+                      finalLabel = '降車(割引)';
+                      break;
+                    default:
+                      finalLabel = (diff == 0) ? '記録' : '運賃支払';
                   }
                 }
+
+                collectedHistory.add(
+                  SuicaHistory(
+                    date: displayDate,
+                    balance: currentBalance,
+                    amount: diff,
+                    isCharge: diff > 0,
+                    label: finalLabel,
+                    raw: b,
+                    lineCode: line,
+                    enterStationCode: (statusType == 0x30) ? station : null,
+                    exitStationCode:
+                        (statusType == 0x41 ||
+                            statusType == 0x44 ||
+                            statusType == 0x20 ||
+                            statusType == 0x47 ||
+                            diff < 0)
+                        ? station
+                        : null,
+                    ticketNumber: 0,
+                  ),
+                );
               }
             }
 
@@ -893,8 +884,10 @@ class _HomePageState extends State<HomePage>
                   '${item.date.year}/${item.date.month.toString().padLeft(2, "0")}/${item.date.day.toString().padLeft(2, "0")} ${item.date.hour.toString().padLeft(2, "0")}:${item.date.minute.toString().padLeft(2, "0")}   残高: ¥${item.balance}',
                   style: const TextStyle(color: Colors.white54, fontSize: 11),
                 ),
-                if (item.enterStationCode != null &&
-                    item.enterStationCode != 0) ...[
+                if ((item.enterStationCode != null &&
+                        item.enterStationCode != 0) ||
+                    (item.exitStationCode != null &&
+                        item.exitStationCode != 0)) ...[
                   Builder(
                     builder: (context) {
                       final enterName =
