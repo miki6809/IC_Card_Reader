@@ -40,9 +40,9 @@ final Map<int, String> _stationMap = {
   0x1E8AF0: '鹿児島中央駅前', // 市電 N11
   0x1FBDF0: '鹿児島中央駅', // 南国交通 （上り）
   0x1FEC30: '天文館', // 南国交通 （上り）,
-  0x23E400: '鹿児島中央駅', // ＪＲ九州バス （上り）
   0x23E3D0: '天文館', // ＪＲ九州バス （上り）
-  0x3095A0: 'フェリー 桜島口', // 桜島
+  0x23E400: '鹿児島中央駅', // ＪＲ九州バス （上り）
+  0x3095A0: '桜島フェリー', // 桜島口にだけ料金所がある
   // いわさきグループ (事業者 0x4x, 0x5x：B3上位ニブル) - Stop: 12bit (B3下位ニブル-B5)
   // 0x0D6: '林田バス停留所', // 例: 0x50 operator
   0x282: '騎射場（下り）', // 鹿児島交通
@@ -911,16 +911,16 @@ class _HomePageState extends State<HomePage>
 
                       // ユーザー要望による表示制御:
                       // 乗車(0円)の時は降車情報は不要 -> "-"
-                      // 支払(マイナス)の時は乗車情報は不要 -> "-" (※データとしては乗車地があるが、UI上は隠す)
+                      // 支払(マイナス)の時は乗車情報は不要 -> "-"
                       String enterStr = '-';
                       String exitStr = '-';
 
                       if (item.amount == 0) {
-                        // 乗車時: 乗車地を表示、降車地は無視
+                        // 乗車時: 乗車地を表示
                         enterStr =
                             '$enterName(${item.enterStationCode!.toRadixString(16).toUpperCase()})';
                       } else if (item.amount < 0) {
-                        // 支払(降車)時: 降車地を表示、乗車地は無視
+                        // 支払(降車)時: 降車地を表示
                         // ※ユーザー要望「降りているので乗には表示が出ないはず」に対応
                         exitStr =
                             '$exitName(${item.exitStationCode!.toRadixString(16).toUpperCase()})';
@@ -933,7 +933,8 @@ class _HomePageState extends State<HomePage>
                       }
 
                       return Text(
-                        '系統:${item.lineCode}  乗:$enterStr  降:$exitStr',
+                        /*'系統:${item.lineCode}\n乗:$enterStr  降:$exitStr',*/
+                        '事業者コード:${item.lineCode}\n乗:$enterStr  降:$exitStr',
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 11,
