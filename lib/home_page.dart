@@ -324,7 +324,7 @@ class _HomePageState extends State<HomePage>
               }
 
               // 最古の履歴（最後のブロック）は不完全なデータの可能性があるため除外
-              int maxIndex = resBlocks.length > 0 ? resBlocks.length - 1 : 0;
+              int maxIndex = resBlocks.isNotEmpty ? resBlocks.length - 1 : 0;
               for (int i = 0; i < maxIndex; i++) {
                 var b = resBlocks[i];
                 if (b.length < 16) continue;
@@ -683,7 +683,9 @@ class _HomePageState extends State<HomePage>
       final file = File(path);
       await file.writeAsString(csvData);
 
-      await Share.shareXFiles([XFile(path)], text: 'IC Card History Export');
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(path)], text: 'IC Card History Export'),
+      );
     } catch (e) {
       _addLog('Export Error: $e');
       _showError('書き出しに失敗しました: $e');
